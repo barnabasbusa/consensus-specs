@@ -71,19 +71,22 @@ def onboard_builders_from_pending_deposits(state: BeaconState) -> None:
     Applies any pending deposit for builders, effectively
     onboarding builders at the fork.
     """
-    validator_pubkeys = [v.pubkey for v in state.validators]
+    validator_pubkeys = {v.pubkey for v in state.validators}
+    builder_pubkeys: Set[BLSPubkey] = set()
 
+    # First pass: classify each pending deposit in queue order. Deposits routed
+    # to the builder registry are collected to be onboarded later; all other
+    # deposits remain in the pending queue. Classification is performed in the
+    # original FIFO order so that it is deterministic and independent of the
+    # onboarding order chosen below.
+    new_builder_deposits = []
+    extra_builder_balances: Dict[BLSPubkey, Gwei] = {}
     pending_deposits = []
     for deposit in state.pending_deposits:
         # Deposits for existing validators stay in the pending queue
         if deposit.pubkey in validator_pubkeys:
             pending_deposits.append(deposit)
             continue
-
-        # Note that applying a deposit below can mutate the state and
-        # may add a builder to the registry. For this reason, the list
-        # of builder pubkeys must be recomputed each iteration.
-        builder_pubkeys = [b.pubkey for b in state.builders]
 
         # Deposits for non-builders stay in the pending queue. If there is a
         # valid pending deposit for a new validator with this pubkey, keep this
@@ -103,19 +106,35 @@ def onboard_builders_from_pending_deposits(state: BeaconState) -> None:
             ):
                 continue
 
+            # Route the first valid deposit for this pubkey to a new builder.
+            new_builder_deposits.append(deposit)
+            builder_pubkeys.add(deposit.pubkey)
+        else:
+            # Subsequent deposits for the same pubkey top up the builder balance.
+            current = extra_builder_balances.get(deposit.pubkey, Gwei(0))
+            extra_builder_balances[deposit.pubkey] = current + deposit.amount
+
+    state.pending_deposits = pending_deposits
+
+    # Second pass: onboard builders in a shuffled order so that a depositor
+    # cannot use queue position to gain a deterministic onboarding advantage.
+    # Each builder is defined by its first pending deposit (credentials and
+    # slot), so finalization-based activation via ``deposit_epoch`` is preserved.
+    if len(new_builder_deposits) > 0:
+        seed = get_seed(state, get_current_epoch(state), DOMAIN_BEACON_BUILDER)
+        for index in compute_shuffled_permutation(uint64(len(new_builder_deposits)), seed):
+            deposit = new_builder_deposits[index]
+            amount = deposit.amount
+            if deposit.pubkey in extra_builder_balances:
+                amount += extra_builder_balances[deposit.pubkey]
             add_builder_to_registry(
                 state,
                 deposit.pubkey,
                 PAYLOAD_BUILDER_VERSION,
                 ExecutionAddress(deposit.withdrawal_credentials[12:]),
-                deposit.amount,
+                amount,
                 deposit.slot,
             )
-        else:
-            builder_index = BuilderIndex(builder_pubkeys.index(deposit.pubkey))
-            state.builders[builder_index].balance += deposit.amount
-
-    state.pending_deposits = pending_deposits
 ```
 
 ## Fork to Gloas

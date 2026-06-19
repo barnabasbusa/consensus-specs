@@ -194,11 +194,13 @@ def test_fork_multiple_builder_deposits(spec, phases, state):
 
     post_state = yield from run_fork_test(post_spec, state)
 
-    # Three builders should be created
+    # Three builders should be created. Onboarding order is shuffled, so the
+    # set of onboarded pubkeys is checked rather than their positional order.
     assert len(post_state.builders) == 3
-    for i in range(3):
-        assert post_state.builders[i].pubkey == builder_pubkeys[i]
-        assert post_state.builders[i].balance == amount
+    onboarded_pubkeys = {builder.pubkey for builder in post_state.builders}
+    assert onboarded_pubkeys == set(builder_pubkeys[:3])
+    for builder in post_state.builders:
+        assert builder.balance == amount
 
     # All pending deposits should be removed
     assert len(post_state.pending_deposits) == 0
@@ -311,10 +313,11 @@ def test_fork_mixed_pending_deposits(spec, phases, state):
 
     post_state = yield from run_fork_test(post_spec, state)
 
-    # Two builders should be created
+    # Two builders should be created. Onboarding order is shuffled, so the set
+    # of onboarded pubkeys is checked rather than their positional order.
     assert len(post_state.builders) == 2
-    assert post_state.builders[0].pubkey == builder_pubkey_1
-    assert post_state.builders[1].pubkey == builder_pubkey_2
+    onboarded_pubkeys = {builder.pubkey for builder in post_state.builders}
+    assert onboarded_pubkeys == {builder_pubkey_1, builder_pubkey_2}
 
     # Two pending deposits should remain (validator top-up and new validator)
     assert len(post_state.pending_deposits) == 2
